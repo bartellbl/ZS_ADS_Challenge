@@ -1,0 +1,206 @@
+---
+title: "ZS Insurance Challenge"
+author: "Brandon Bartell"
+date: "Tuesday, April 12, 2016"
+output: word_document
+---
+
+#Load Packages
+First load some of the packages that may be required.
+```{r, cache=TRUE, echo=FALSE}
+
+#Load required packages
+library(caret)
+library(DMwR)
+library(e1071)
+library(ggplot2)
+library(Hmisc)
+library(randomForest)
+library(polycor)
+#library(datasets); data(swiss); require(stats); require(graphics); 
+library(FNN)
+library(class)
+
+```
+
+##Load Data
+
+```{r, cache=TRUE}
+
+#load data
+setwd("C:/Users/bartellb/Desktop/AlgoRhythms Challenge")
+
+train_fnm<-"Training Data - Premium Prediction.csv"
+train<-data.frame(read.table(file=train_fnm,sep=",", header=TRUE))
+logtest<-read.table("logtest",header=TRUE,sep=",")
+```
+
+
+```{r,cache=TRUE}
+rm_model_vars<-c("Var_3","Var_6","Var_9","Var_14","Var_17","Var_18","Var_19","Var_20","Var_22","Var_26","Var_30","Var_31","Var_34","Var_37","Var_38")
+
+model_vars<-setdiff(names(logtest),rm_model_vars)
+
+#variables that need to be logarithmically transformed
+log_vars<-setdiff(model_vars,c("ID","Premium","sign","row0","Var_4","Var_7","Var_8","Var_11","Var_25","Var_28","Var_29","Var_42","Var_44","log_prem"))
+```
+
+
+```{r,cache=TRUE}
+train$sign<-sign(train$Premium)
+nonneg<-which(train$sign>-1) #includes 0s, excludes negatives
+nzero<-which(train$sign>0)
+postrain<-train[nzero,]
+postrain$log_prem<-log(postrain$Premium+1)
+
+row_zero<-function(row){
+  return(sum(row==0))
+  }
+fct<-c("Var_4","Var_7","Var_8","Var_11","Var_25","Var_28","Var_29","Var_34","Var_37","Var_42","sign")
+fctr<-which(names(postrain) %in% fct)
+row0<-apply(postrain[-c(1,2,fctr,49)],1,row_zero)
+postrain$row0<-row0
+```
+
+```{r, cache=TRUE}
+#partition data into training and validation set
+set.seed(395) #ensures reproducibility
+intrain<-createDataPartition(y=postrain$log_prem,p=0.75,list=FALSE)
+postrain2<-postrain[intrain,]
+posvld<-postrain[-intrain,]
+dmtrn2<-dim(postrain2)
+dmvld<-dim(posvld)
+```
+
+```{r, cache=TRUE}
+badrows<-c()
+for (i in log_vars){
+  negrows<-which(postrain2[i]<0)
+  badrows<-c(badrows,negrows)
+  #print(i)
+}
+logpostrain<-postrain2[-badrows,]
+
+#logarithmically transform appropriate vars
+
+logposvld<-posvld
+for (i in log_vars){
+  logpostrain[i]<-log(logpostrain[i]+1)
+  
+  #set bad values equal to 0
+  logposvld[posvld[i]<0,i]<-0
+  logposvld[i]<-log(logposvld[i]+1)
+}  
+```
+
+```{r, cache=TRUE}
+write.table(logpostrain,"logpostrain",sep=",")
+write.table(logposvld,"logposvld",sep=",")
+```
+
+##Start reading data here
+
+```{r,cache=TRUE}
+#factor vars
+fct<-c("Var_4","Var_7","Var_8","Var_11","Var_25","Var_28","Var_29","Var_34","Var_37","Var_42","sign")
+for (i in fct){
+  logpostrain[i]<-as.factor(logpostrain[[i]])
+  logposvld[i]<-as.factor(logposvld[[i]])
+  logtest[i]<-as.factor(logtest[[i]])
+  }
+```
+
+##Drop Vars
+```{r,cache=TRUE}
+drppostrain<-logpostrain[,model_vars]
+drpposvld<-logposvld[,model_vars]
+drptest<-logtest[,model_vars]
+```
+
+##Standardize
+```{r,cache=TRUE}
+drpfctr<-which(names(drppostrain) %in% fct)
+##Standardize all variables except factor variables, ID, Premium, sign, log_prem, and row0
+preObj<-preProcess(drppostrain[,-c(1,2,33,34,35,drpfctr)],method=c("center","scale"))
+normtrain<-drppostrain
+normtrain[,-c(1,2,33,34,35,drpfctr)]<-predict(preObj,drppostrain[,-c(1,2,33,34,35,drpfctr)])
+
+normvld<-drpposvld
+normtest<-drptest
+normvld[,-c(1,2,33,34,35,drpfctr)]<-predict(preObj,drpposvld[,-c(1,2,33,34,35,drpfctr)])
+normtest[,-c(1,2,33,34,35,drpfctr)]<-predict(preObj,drptest[,-c(1,2,33,34,35,drpfctr)])
+
+write.table(normtrain,"normtrain",sep=",")
+write.table(normvld,"normvld",sep=",")
+write.table(normtest,"normtest",sep=",")
+
+#drop extreme values
+#extr<-c(which(normtrain$Var_44<6),which(normtrain$Var_43>15),which(normtrain$Var_13<5),)
+```
+
+##KNN
+```{r,cache=TRUE}
+knorm<-normvld[,-c(1,2)]
+ktrain<-normtrain[,-c(1,2)]
+dnorm<-dim(knorm)
+dtrain<-dim(ktrain)
+knorm$log_prem<-NA
+kall<-rbind(ktrain,knorm)
+kres10<-knnImputation(kall)
+kres3<-knnImputation(kall,k=3)
+kres15<-knnImputation(kall,k=15)
+kres1<-knnImputation(kall,k=1)
+vldpred3<-kres3[32079:42775,]
+vldpred10<-kres10[32079:42775,]
+vldpred15<-kres15[32079:42775,]
+vldpred1<-kres1[32079:42775,]
+sum((normvld$log_prem[normvld$log_prem>6]-vld_pred10$log_prem[normvld$log_prem>6])^2)
+sum((normvld$log_prem-vld_pred10$log_prem)^2)
+sum((normvld$log_prem-vld_pred1$log_prem)^2)
+sum((normvld$log_prem-vldpred15$log_prem)^2)
+
+
+kdrptrain<-drppostrain[,-c(1,2)]
+kdrpvld<-drpposvld[,-c(1,2)]
+
+kvldlab<-normvld[,-c(1,2)]
+postest<-which(normtest$sign==1)
+ktest<-normtest[postest,-c(1,2)]
+kntestall<-rbind(ktrain,kvldlab,ktest)
+testpred<-knnImputation(kntestall,k=15)
+
+testpred_out<-testpred[42776:78127,]$log_prem
+normtest_out<-normtest
+normtest_out[postest,]$log_prem<-testpred_out
+normtest_out$Premium<-exp(normtest_out$log_prem)-1
+
+write.table(normtest_out,"normtest_out",sep=",")
+
+
+
+```
+
+
+##look at regression for like observations
+
+```{r, cache=TRUE}
+library(plyr)
+summary(drppostrain)
+nvars<-c(1,2,5,10,12,13,15,16,21,23,24,27,32,33,35,36,39,40,41,43,45)
+nvars<-paste(replicate(21,"Var_"),nvars,sep = "")
+postrain_lv<-drppostrain[,which(names(drppostrain) %in% nvars)]
+postrain_bin<-data.frame((postrain_lv>0)*1)
+unqct_t<-count(postrain_bin,vars=names(postrain_bin))
+
+posvld_bin<-data.frame((drpposvld[,which(names(drpposvld) %in% nvars)]>0)*1)
+unqct_v<-count(posvld_bin,vars=names(posvld_bin))
+
+write.table(unqct_v,"unqct_v",sep=",",row.names = FALSE)
+
+write.table(unqct_t,"unqct_t",sep=",",row.names = FALSE)
+}
+
+```
+
+
+```
