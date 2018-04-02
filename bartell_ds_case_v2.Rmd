@@ -1,0 +1,180 @@
+---
+title: "bartell_ds_case_v2"
+author: "Brandon Bartell"
+date: "Saturday, August 01, 2015"
+output: word_document
+---
+
+#Load required packages
+```{r, cache=TRUE, eval=FALSE}
+library(caret)
+library(DMwR)
+library(e1071)
+library(ggplot2)
+library(Hmisc)
+library(randomForest)
+library(datasets); data(swiss); require(stats); require(graphics)
+#pairs(swiss, panel = panel.smooth, main = "Swiss data", col = 3 + (swiss$Catholic > 50))
+
+```
+
+
+#Load Data
+```{r, cache=TRUE}
+#load data
+setwd("C:/Users/bartellb/Desktop/DS")
+nline<-5000
+train_fnm<-"train.csv"
+test_fnm<-"test.csv"
+train<-data.frame(read.table(file=train_fnm,sep=",", header=TRUE,nrows=nline))
+test<-data.frame(read.table(file=test_fnm,sep=",", header=TRUE,nrows=nline))
+dmtrn<-dim(train)
+dmtst<-dim(test)
+outtype<-levels(train$PID_State)
+```
+
+#Exploratory Analysis
+We can look at some summary statistics for each variable. We see that all of the data other than the classifier is numeric, and that there are some sporadic NAs that we will have to take care of.
+
+```{r, cache=TRUE}
+#summary stats for each variable
+summary(train)
+
+#check nas
+narow<-rowSums(is.na(train))  
+hist(narow)
+nacol<-colSums(is.na(train))
+plot(nacol)
+nas<-sum(is.na(train))
+
+#check for duplicate observations and duplicate predictor variables
+sum(duplicated(train))
+sum(duplicated(t(train)))
+
+#look at rate of occurrence for outcome states
+table(train$PID_State)/dmtrn[1]
+```
+
+It appears that there are no duplicated observations or duplicate predictor variables. It also appears like there are `r nas`, dispersed NA values which need to be imputed in order to run the ML algorithm on the training data. We also see that the DO state appears in 33.5% of the observations, DS1 for 20.5% and P for 45.9% in the training set.
+
+#Imputation
+```{r, cache=TRUE}
+train_imp<-knnImputation(train)
+test_imp<-test
+test_imp[,-81]<-knnImputation(test[,-81])
+```
+
+#Check Variable Correlations
+We can see how the 3 classes are correlated with each variable in the data set, as well as how those variables correlated with one another. Here we just look at the first 4 variables.
+
+
+```{r, cache=TRUE}
+# cor_arr<-c()
+# for (i in 1:dmtrn[2]-1){
+#   cor_arr<-c(cor_arr,cor(train_imp[,i],train_imp$PID_State))
+# }
+# plot(cor_arr)
+
+featurePlot(x=train_imp[,1:4],y=train_imp$PID_State,plot="pairs")
+```
+
+#PCA
+We can also plot the top two principal components of the data to see if the output classifications are exist in different principal component space. It appears they do not.
+
+```{r, cache=TRUE}
+#typeColor <- ((spam$type=="spam")*1 + 1)
+typeColor<- ((train_imp$PID_State==outtype[1])*1+(train_imp$PID_State==outtype[2])*2+(train_imp$PID_State==outtype[3])*3)
+
+prComp <- prcomp(log10(train_imp[,-81]+1))
+plot(prComp$x[,1],prComp$x[,2],col=typeColor,xlab="PC1",ylab="PC2")
+```
+
+#Partition Training Data into Training and Validation Sets
+We need to partition the data into a training and validation set so we can estimate the error on a data set that was not used to train the model. This will give a good estimate of the test error, or allow to select the best from a suite of models.
+
+```{r, cache=TRUE}
+#partition data into training and validation set
+intrain<-createDataPartition(y=train_imp$PID_State,p=0.75,list=FALSE)
+train2<-train_imp[intrain,]
+vld<-train_imp[-intrain,]
+dmtrn2<-dim(train2)
+dmvld<-dim(vld)
+```
+
+#Pre-Process the Data
+The data should be pre-processed by normalizing and zeroing the features.
+
+```{r, cache=TRUE}
+#regularize features by subtracting mean and dividing by standard deviation. This must be done for the validation and test set as well, using the mean and sd from the training set.
+
+normtrain_arr<-c()
+normtrain<-train2
+normvld<-vld
+normtest<-test_imp
+for (i in 2:dmtrn2[2]-1){
+  normtrain_arr<-rbind(normtrain_arr,c(mean(train2[,i]),sd(train2[,i])))
+  normtrain[,i]<-(normtrain[,i]-normtrain_arr[i,1])/normtrain_arr[i,2]
+  normvld[,i]<-(normvld[,i]-normtrain_arr[i,1])/normtrain_arr[i,2]
+  normtest[,i]<-(normtest[,i]-normtrain_arr[i,1])/normtrain_arr[i,2]
+}
+```
+
+#Classification Tree
+We can create a classification tree using all of the features.
+```{r, cache=TRUE}
+tree_modFit<-train(PID_State ~ .,method="rpart",data=normtrain)
+print(tree_modFit$finalModel)
+```
+
+```{r, cache=TRUE}
+plot(tree_modFit$finalModel,uniform=TRUE,main="Classification Tree")
+text(tree_modFit$finalModel,use.n=TRUE,all=TRUE,cex=.8)
+```
+
+#Random Forest
+A random forest creates many classification trees, bootstrapping (randomly sampling) both observations (rows) and features (columns) and then averages them. Since it is done randomly, it is important to seed the RNG for reproducibility in the future.
+```{r, cache=TRUE}
+set.seed(395) #ensures reproducibility
+rf_modFit<-randomForest(PID_State ~ ., data=normtrain, ntree=100, importance=TRUE)
+rf_modFit
+varImpPlot(rf_modFit)
+```
+
+The importance plot also shows us that variables 29, 8, 9 10, and 13 are the most imporant predictors 
+
+# Predictions
+Here is how the predictions compare to the actual training set values for 
+
+```{r, cache=TRUE}
+
+# table for a single tree
+tree_pred<-predict(tree_modFit,normtrain)
+#tree_testing$predRight<-tree_pred==normtrain$PID_State)
+table(tree_pred,normtrain$PID_State)
+
+# table for random Forest
+rfpred<-predict(rf_modFit,normtrain)
+table(rfpred,normtrain$PID_State)
+```
+We see that the random forest does much better on the training set itself. But this could be due to overfitting, since this was the data that was used to train the model. An independent evaluation could be done on the validation set.
+
+```{r, cache=TRUE}
+tree_vld_pred<-predict(tree_modFit,normvld)
+table(tree_vld_pred,normvld$PID_State)
+
+rf_vld_pred<-predict(rf_modFit,normvld)
+table(rf_vld_pred,normvld$PID_State)
+```
+
+We see that the random forest algorithm still does better, with accurracy of 88%, however it is significantly worse than when it was compared against the training set, since the algorithm was not trained on the validation set. Since the validation set was independent, we would expect to see roughly the same 88% accurracy on the independent test set.
+
+Now that we have found that the random forest is more accurrate than the stand alone decision tree, we can make predictions for the test set and write them out.
+
+```{r, cache=TRUE}
+rf_test_pred<-predict(rf_modFit,normtest)
+test_pred<-test
+test_pred$PID_State<-rf_test_pred
+
+filename<-"test_pred.csv"
+write.csv(test_pred,file=filename)
+```
